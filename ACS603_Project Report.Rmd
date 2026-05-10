@@ -1,0 +1,483 @@
+---
+title: "ACS603 Project - Aggregate Loss Modeling"
+author: "Issa Khaled"
+date: "2026-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pander)
+library(knitr)
+```
+
+# 1. Introduction
+
+In this project, we study the aggregate annual loss of an automobile insurance portfolio using the collective risk model.
+
+The number of claims is modeled using a Poisson distribution, while the claim severity follows a Gamma distribution. The aggregate loss is then obtained by combining both components.
+
+To analyze the distribution of aggregate loss, we use two approaches. The first approach is Monte Carlo simulation, where we generate a large number of scenarios to approximate the distribution. The second approach is Panjer recursion, which provides a recursive method to compute the aggregate loss distribution.
+
+The analysis is carried out under four different scenarios. We first consider the base case without any coverage modification. We then introduce a deductible, a policy limit, and finally a combination of both.
+
+For each case, we compute key risk measures, including the expected loss, variance, 95th percentile, and the probability that the aggregate loss exceeds a given threshold. These results allow us to compare the impact of coverage modifications and evaluate the consistency between the two methods.
+
+# 2. Model Assumptions and Parameter Setup
+
+We model the aggregate loss using the collective risk framework, where the total loss is driven by both the number of claims and their respective sizes.
+
+The number of claims is assumed to follow a Poisson distribution with mean equal to 2:
+
+**N \~ Poisson(2)**
+
+The claim severity on the other hand follows a Gamma distribution with mean equal to 4000 and standard deviation equal to 2000.
+
+To simulate from this distribution, we express the Gamma distribution in terms of its shape (α) and scale (θ) parameters.
+
+```{r}
+# Poisson parameter
+lambda <- 2
+
+# Severity parameters
+mean_X <- 4000
+sd_X <- 2000
+var_X <- sd_X^2
+
+# Gamma parameters
+alpha <- mean_X^2 / var_X
+theta <- var_X / mean_X
+
+alpha
+theta
+```
+
+The Gamma distribution parameters are therefore α = 4 and θ = 1,000.
+
+This specification allows us to simulate claim amounts that match the given mean and variability. It also ensures that the severity distribution captures the presence of larger claims, which is a key feature in insurance data.
+
+```{r}
+setup_table <- data.frame(
+  Component = c("Frequency", "Severity"),
+  Distribution = c("Poisson", "Gamma"),
+  Parameters = c("lambda = 2", "alpha = 4, theta = 1000")
+)
+
+pander(setup_table)
+```
+
+# 3. Monte Carlo Simulation
+
+We begin by analyzing the aggregate loss using Monte Carlo simulation.
+
+In each simulation, the number of claims is first generated from a Poisson distribution. Then, for each claim, a severity value is generated from the Gamma distribution. The aggregate loss is obtained by summing all claim amounts within the simulation.
+
+This process is repeated a large number of times to approximate the distribution of aggregate loss.
+
+To ensure computational efficiency, the simulation was first performed with 10,000 iterations.
+
+The number of simulations was then increased to 100,000 to check the stability of the results. The main measures, including the mean and the tail probabilities, showed only minor differences between the two runs.
+
+This indicates that the estimates had stabilized, and therefore 10,000 simulations were considered sufficient for the analysis.
+
+## 3.1. Base case simulation
+
+We first consider the base case without any coverage modification.
+
+```{r}
+set.seed(123)
+
+# Number of simulations
+n_sim <- 10000
+
+S_ground <- numeric(n_sim)
+
+for (i in 1:n_sim) {
+  N <- rpois(1, lambda)
+  
+  if (N > 0) {
+    X <- rgamma(N, shape = alpha, scale = theta)
+    S_ground[i] <- sum(X)
+  } else {
+    S_ground[i] <- 0
+  }
+}
+```
+
+## 3.2. Coverage modifications
+
+We then extend the simulation to include the three coverage modifications required in the project.
+
+For the deductible case, each claim payment is reduced by 500, with negative values replaced by zero. For the policy limit case, each claim payment is capped at 10,000. Finally, in the combined case, the deductible is first applied and the resulting payment is then capped by the policy limit.
+
+```{r}
+d <- 500
+u <- 10000
+
+S_ded <- numeric(n_sim)
+S_lim <- numeric(n_sim)
+S_both <- numeric(n_sim)
+
+for (i in 1:n_sim) {
+  N <- rpois(1, lambda)
+  
+  if (N > 0) {
+    X <- rgamma(N, shape = alpha, scale = theta)
+    
+    X_ded  <- pmax(X - d, 0)
+    X_lim  <- pmin(X, u)
+    X_both <- pmin(pmax(X - d, 0), u)
+    
+    S_ded[i]  <- sum(X_ded)
+    S_lim[i]  <- sum(X_lim)
+    S_both[i] <- sum(X_both)
+  } else {
+    S_ded[i]  <- 0
+    S_lim[i]  <- 0
+    S_both[i] <- 0
+  }
+}
+```
+
+## 3.3. Summary measures
+
+```{r}
+compute_stats <- function(S) {
+  c(
+    Mean = mean(S),
+    Variance = var(S),
+  `95th Percentile` = as.numeric(quantile(S, 0.95)),
+    `P(S > 15000)` = mean(S > 15000)
+  )
+}
+
+results_mc <- rbind(
+  Base = compute_stats(S_ground),
+  Deductible = compute_stats(S_ded),
+  Limit = compute_stats(S_lim),
+  Both = compute_stats(S_both)
+)
+
+round(results_mc, 4)
+```
+
+## 3.4. Distribution comparison
+
+```{r}
+plot(density(S_ground), main = "Monte Carlo Aggregate Loss Distributions",
+     xlab = "Aggregate Loss", lwd = 2)
+
+lines(density(S_ded), col = "blue", lwd = 2)
+lines(density(S_lim), col = "red", lwd = 2)
+lines(density(S_both), col = "green", lwd = 2)
+
+legend("topright",
+       legend = c("Base", "Deductible", "Limit", "Both"),
+       col = c("black", "blue", "red", "green"),
+       lwd = 2,
+       bty = "n")
+```
+
+## 3.5. Interpretation of Monte Carlo results
+
+From the Monte Carlo results, we observe clear differences across the four cases.
+
+The base case produces the highest expected aggregate loss, approximately 7,900, with a relatively high variability and a 95th percentile close to 19,800, since the insurer retains the full amount of every claim.
+
+When the deductible is introduced, the expected loss decreases noticeably to around 7,000. This is expected, since part of the smaller claims is absorbed by the policyholder rather than the insurer. As a result, both the variance and the tail probability decrease, with the probability of exceeding 15,000 dropping from about 13.5% to below 10%.\
+\
+The policy limit has a different impact. While the expected loss remains close to the ground-up case, the effect is more visible in the upper tail of the distribution. By capping large claims, the limit reduces extreme outcomes, although the reduction is less pronounced compared to the deductible.\
+\
+When both the deductible and the policy limit are applied together, the impact becomes more significant. The expected loss drops further to approximately 6,950, and the tail risk is reduced even more, with the probability of exceeding 15,000 falling to around 9%.\
+\
+Overall, the combined effect provides the strongest reduction in risk, as it limits both small frequent losses and large extreme losses.
+
+# 4. Panjer Recursion
+
+In addition to simulation, we analyze the aggregate loss distribution using Panjer recursion.
+
+This method provides a recursive way to compute the probability distribution of aggregate loss when the claim frequency belongs to a specific class of distributions. In our case, the number of claims follows a Poisson distribution, that belongs to the (a, b, 0) class with a = 0 = 0, and b = λ, which allows the use of Panjer recursion.
+
+Unlike Monte Carlo simulation, which relies on random sampling, Panjer recursion computes the distribution directly through a deterministic procedure. This allows us to obtain an exact approximation of the aggregate loss distribution, given a discretized severity model.
+
+## 4.1. Severity discretization
+
+Since Panjer recursion operates on discrete distributions, the continuous severity distribution must first be discretized.
+
+We approximate the Gamma distribution by dividing the range of possible losses into intervals of fixed width, and assigning probabilities to each interval. This allows us to construct a discrete severity distribution that can be used in the recursion.
+
+```{r}
+h <- 100   # discretization step
+max_loss <- 50000
+
+x_vals <- seq(0, max_loss, by = h)
+
+# Discretized severity probabilities
+fx <- pgamma(x_vals + h, shape = alpha, scale = theta) -
+      pgamma(x_vals, shape = alpha, scale = theta)
+
+# Normalize (for numerical stability)
+fx <- fx / sum(fx)
+```
+
+## 4.2. Panjer Recursion implementation
+
+Using the discretized severity distribution, we apply the Panjer recursion formula to compute the aggregate loss distribution.
+
+The recursion starts from the probability of zero loss and builds the distribution step by step using the properties of the Poisson frequency distribution.
+
+```{r}
+g <- numeric(length(x_vals))
+g[1] <- exp(-lambda)   # g(0)
+
+for (k in 2:length(x_vals)) {
+  g[k] <- (lambda / (k - 1)) * sum(
+    (1:(k - 1)) * fx[2:k] * g[(k - 1):1]
+  )
+}
+```
+
+## 4.3. Summary measures
+
+Once the aggregate loss distribution is obtained, we compute the same summary measures used in the Monte Carlo analysis.
+
+```{r}
+# Convert to actual loss values
+loss_vals <- x_vals
+
+panjer_mean <- sum(loss_vals * g)
+panjer_var  <- sum((loss_vals^2) * g) - panjer_mean^2
+
+cdf_vals <- cumsum(g)
+
+panjer_q95 <- loss_vals[min(which(cdf_vals >= 0.95))]
+panjer_prob <- sum(g[loss_vals > 15000])
+
+panjer_results <- c(
+  Mean = panjer_mean,
+  Variance = panjer_var,
+  `95th Percentile` = panjer_q95,
+  `P(S > 15000)` = panjer_prob
+)
+
+panjer_results
+```
+
+From the results obtained using Panjer recursion, we observe that the main summary measures are very close to those obtained from the Monte Carlo simulation.
+
+The expected aggregate loss is approximately 7,900, which is almost identical to the simulated value. The variance also remains at a similar level, confirming that both methods capture the overall variability of the loss distribution in a consistent way.
+
+Looking at the tail behavior, the 95th percentile is around 19,700, and the probability of exceeding 15,000 is close to 13%. These values are slightly lower than those obtained from simulation, which can be explained by the discretization step used in the recursion.
+
+Overall, the results show a strong agreement between the two methods. This confirms that the Panjer recursion provides a reliable approximation of the aggregate loss distribution, while avoiding the randomness inherent in simulation.
+
+## 4.4 Coverage modifications
+
+We now extend the Panjer recursion to the three coverage modifications considered earlier.
+
+Since the recursion depends on the severity distribution, the main adjustment is made at the severity level.
+
+We begin by discretizing the modified severities under each coverage condition.
+
+For the deductible case, the insurer payment is given by (X - d)~+~ , which creates a mass at zero because some losses fall below the deductible.
+
+For the policy limit case, the insurer payment is capped at the policy limit u, which shifts part of the upper tail to the limit point.
+
+For the combined case, the payment is first reduced by the deductible and then capped by the policy limit.
+
+```{r}
+d <- 500
+u <- 10000
+
+panjer_poisson <- function(fx, lambda) {
+  g <- numeric(length(fx))
+  g[1] <- exp(-lambda)   # Probability of zero aggregate loss
+  
+  for (k in 2:length(fx)) {
+    g[k] <- (lambda / (k - 1)) * sum(
+      (1:(k - 1)) * fx[2:k] * g[(k - 1):1]
+    )
+  }
+  
+  return(g)
+}
+
+# Deductible case: Y = (X - d)+
+fx_ded <- numeric(length(x_vals))
+fx_ded[1] <- pgamma(d, shape = alpha, scale = theta)
+
+for (k in 2:length(x_vals)) {
+  lower <- d + x_vals[k]
+  upper <- d + x_vals[k] + h
+  fx_ded[k] <- pgamma(upper, shape = alpha, scale = theta) -
+               pgamma(lower, shape = alpha, scale = theta)
+}
+fx_ded <- fx_ded / sum(fx_ded)
+
+# Limit case: Y = min(X, u)
+fx_lim <- numeric(length(x_vals))
+
+for (k in 1:(length(x_vals) - 1)) {
+  if (x_vals[k] < u) {
+    fx_lim[k] <- pgamma(x_vals[k] + h, shape = alpha, scale = theta) -
+                 pgamma(x_vals[k], shape = alpha, scale = theta)
+  }
+}
+
+limit_index <- which.min(abs(x_vals - u))
+fx_lim[limit_index] <- fx_lim[limit_index] +
+                       (1 - pgamma(u, shape = alpha, scale = theta))
+fx_lim <- fx_lim / sum(fx_lim)
+
+# Both deductible and limit: Y = min((X - d)+, u)
+fx_both <- numeric(length(x_vals))
+fx_both[1] <- pgamma(d, shape = alpha, scale = theta)
+
+for (k in 2:(length(x_vals) - 1)) {
+  if (x_vals[k] < u) {
+    lower <- d + x_vals[k]
+    upper <- d + x_vals[k] + h
+    fx_both[k] <- pgamma(upper, shape = alpha, scale = theta) -
+                  pgamma(lower, shape = alpha, scale = theta)
+  }
+}
+
+both_limit_index <- which.min(abs(x_vals - u))
+fx_both[both_limit_index] <- fx_both[both_limit_index] +
+                             (1 - pgamma(d + u, shape = alpha, scale = theta))
+fx_both <- fx_both / sum(fx_both)
+
+c(sum(fx_ded), sum(fx_lim), sum(fx_both))
+```
+
+Using these modified severity distributions, we apply the same recursion formula to obtain the aggregate loss distribution for each case.
+
+```{r}
+g_ground <- panjer_poisson(fx, lambda)
+g_ded    <- panjer_poisson(fx_ded, lambda)
+g_lim    <- panjer_poisson(fx_lim, lambda)
+g_both   <- panjer_poisson(fx_both, lambda)
+
+c(sum(g_ground), sum(g_ded), sum(g_lim), sum(g_both))
+```
+
+The resulting aggregate loss probabilities sum to approximately 1, confirming that the recursion produces a valid probability distribution.
+
+## 4.5. Summary measures for all cases
+
+```{r}
+compute_panjer_stats <- function(g, loss_vals) {
+  mean_val <- sum(loss_vals * g)
+  var_val  <- sum((loss_vals^2) * g) - mean_val^2
+  cdf_vals <- cumsum(g)
+  
+  idx <- which(cdf_vals >= 0.95)
+  q95_val <- if (length(idx) > 0) loss_vals[min(idx)] else NA
+  
+  prob_val <- sum(g[loss_vals > 15000])
+  
+  c(
+    Mean = mean_val,
+    Variance = var_val,
+    `95th Percentile` = q95_val,
+    `P(S > 15000)` = prob_val
+  )
+}
+
+results_panjer <- rbind(
+  Ground = compute_panjer_stats(g_ground, x_vals),
+  Deductible = compute_panjer_stats(g_ded, x_vals),
+  Limit = compute_panjer_stats(g_lim, x_vals),
+  Both = compute_panjer_stats(g_both, x_vals)
+)
+
+results_panjer
+```
+
+## 4.6. Interpretation
+
+From the Panjer recursion results, we observe the same overall pattern obtained in the Monte Carlo analysis.
+
+In the ground-up case, the expected aggregate loss is approximately 7,900, with a 95th percentile close to 19,700 and a probability of exceeding 15,000 around 13%. These values are very close to those obtained from simulation, confirming that both methods are capturing the same underlying behavior.
+
+When a deductible is introduced, the expected loss decreases to about 6,900. This reduction is mainly due to the removal of smaller claims, which lowers both the average loss and the variability. The tail risk also decreases, with the probability of exceeding 15,000 falling to around 9%.
+
+The policy limit produces a more moderate effect. The expected loss remains close to the ground-up case, at approximately 7,870, but the upper tail is slightly reduced. This reflects the fact that the limit mainly affects larger claims while leaving smaller and moderate losses unchanged.
+
+When both the deductible and the policy limit are applied together, the impact becomes more pronounced. The expected loss decreases further to about 6,870, and the tail risk is reduced even more, with the probability of exceeding 15,000 falling below 9%.
+
+Overall, the Panjer results confirm the same conclusions obtained from the Monte Carlo simulation. Both methods show that the deductible reduces the impact of smaller claims, the policy limit controls large losses, and their combination provides the strongest reduction in overall risk.
+
+# 5. Comparison of Monte Carlo Simulation and Panjer Recursion
+
+In this section, we compare the results obtained from Monte Carlo simulation and Panjer recursion.
+
+Both methods were applied to the same four scenarios, and the corresponding summary measures are presented side by side to assess the consistency between the two approaches.
+
+```{r}
+
+results_mc_df <- as.data.frame(results_mc)
+results_panjer_df <- as.data.frame(results_panjer)
+
+# Add method labels
+results_mc_df$Method <- "Monte Carlo"
+results_panjer_df$Method <- "Panjer"
+
+# Add case labels
+results_mc_df$Case <- rownames(results_mc_df)
+results_panjer_df$Case <- rownames(results_panjer_df)
+
+# Combine
+results_combined <- rbind(results_mc_df, results_panjer_df)
+
+results_combined_display <- results_combined
+results_combined_display[, c("Mean", "Variance", "95th Percentile", "P(S > 15000)")] <-
+  round(results_combined_display[, c("Mean", "Variance", "95th Percentile", "P(S > 15000)")], 2)
+
+kable(results_combined_display,
+      caption = "Comparison of Monte Carlo and Panjer Results",
+      align = "c")
+```
+
+The results obtained from Monte Carlo simulation and Panjer recursion are very close across all scenarios, which confirms that both methods were implemented correctly.
+
+Starting with the expected aggregate loss, the values are almost identical. The difference between the two methods is very small, showing that both approaches capture the average behavior of the losses in a consistent way.
+
+The same pattern appears in the variance. The results are very similar, which means that both methods give a reliable estimate of the variability of the aggregate loss. Any small difference is mainly due to the randomness in the simulation.
+
+For the 95th percentile, the difference is slightly more noticeable compared to the mean and variance. This is expected, since tail measures are more sensitive. Monte Carlo results may vary slightly because of the number of simulations, while Panjer recursion depends on the discretization of the severity distribution. Still, the difference remains small and acceptable.
+
+Looking at the probability that the aggregate loss exceeds 15,000, both methods again give very close results.
+
+Overall, the results from both methods are highly consistent. This gives confidence in the accuracy of the model. Monte Carlo simulation is more flexible and easier to implement, while Panjer recursion is more structured and does not rely on randomness.
+
+From an implementation perspective, Monte Carlo simulation is simpler and more flexible. It can be applied directly and extended to more complex settings without significant adjustments.\
+\
+On the other hand, Panjer recursion, requires additional steps, such as discretizing the severity distribution and carefully implementing the recursive formula. However, once these steps are completed, it provides a deterministic and stable approximation of the aggregate loss distribution.\
+\
+In this project, Monte Carlo simulation is easier to implement, while Panjer recursion offers a more structured approach. The close agreement between the two methods further confirms the validity of both techniques.
+
+```{r}
+plot(ecdf(S_ground), main = "CDF Comparison (Ground-Up Case)",
+     xlab = "Aggregate Loss", col = "blue")
+
+lines(x_vals, cumsum(g_ground), col = "red")
+
+legend("bottomright",
+       legend = c("Monte Carlo", "Panjer"),
+       col = c("blue", "red"),
+       lwd = 2,
+       bty = "n")
+```
+
+# 6. Conclusion
+
+In this project, the aggregate loss distribution was analyzed using both Monte Carlo simulation and Panjer recursion under different coverage scenarios.
+
+The results obtained from the two methods were highly consistent across all cases. This confirms that both approaches provide reliable estimates of the aggregate loss distribution, despite the differences in their implementation.
+
+The analysis also highlights the impact of coverage modifications on insurer risk. The deductible reduces the effect of smaller claims, leading to a noticeable decrease in the expected loss and variability. The policy limit mainly affects larger claims, reducing the upper tail of the distribution. When both are applied together, the reduction becomes more significant, providing the strongest protection against both frequent and extreme losses.
+
+From a practical perspective, Monte Carlo simulation is easier to implement and more flexible, while Panjer recursion offers a more structured and deterministic approach. The agreement between the two methods strengthens the confidence in the results obtained.
+
+Overall, the findings show that coverage design plays a key role in managing aggregate risk, and that both simulation and analytical methods can be effectively used to evaluate its impact.
